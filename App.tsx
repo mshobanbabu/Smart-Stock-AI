@@ -202,19 +202,28 @@ const App: React.FC = () => {
   // Initial Data Load
   useEffect(() => {
     const initData = async () => {
-      // Add a small delay to prevent "Refresh storms" from hitting API instantly
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // 1. IMMEDIATE SYNCHRONOUS CHECK (Critical for preventing race conditions)
+      if (initRef.current && Date.now() - lastFetchRef.current < 30000) {
+        console.log("InitData skipped: already initialized or recently fetched.");
+        return;
+      }
       
-      // Prevent double execution in StrictMode or rapid state changes
-      if (initRef.current && Date.now() - lastFetchRef.current < 10000) return;
+      // Mark as initialized immediately to block other concurrent calls
+      initRef.current = true;
+      lastFetchRef.current = Date.now();
+
+      // Add a small delay to allow the UI to settle
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       try {
         // Check for API key early
         const apiKey = prefs.customApiKey || 
           (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : undefined) || 
           (import.meta as any).env?.VITE_GEMINI_API_KEY;
+        
         if (!apiKey || apiKey === 'undefined' || apiKey.length < 10) {
-          setError("GEMINI_API_KEY is missing or invalid. Please set it in your Vercel Environment Variables and REDEPLOY, or add it in Settings.");
+          setError("GEMINI_API_KEY is missing or invalid. Please set it in Settings.");
+          initRef.current = false; // Allow retry if they fix the key
           return;
         }
 
@@ -224,14 +233,13 @@ const App: React.FC = () => {
         const quotaCooldown = localStorage.getItem('quota_cooldown');
         
         if (quotaCooldown && Date.now() - parseInt(quotaCooldown) < 300000) {
-          // If we hit a quota error in the last 5 mins, don't even try to fetch
           if (cached) {
             const { pulse, stocks } = JSON.parse(cached);
             setMarketPulse(pulse);
             setTrending(stocks);
-            setError("API is in cooldown due to previous quota error. Using cached data.");
+            setError("API is in cooldown. Using cached data.");
           } else {
-            setError("API is in cooldown. Please wait a few minutes before refreshing.");
+            setError("API is in cooldown. Please wait a few minutes.");
           }
           return;
         }
@@ -239,7 +247,7 @@ const App: React.FC = () => {
         if (cached) {
           try {
             const { pulse, stocks, timestamp } = JSON.parse(cached);
-            const isFresh = Date.now() - timestamp < 3600000; // 1 hour cache for market pulse
+            const isFresh = Date.now() - timestamp < 1800000; // 30 min cache
             if (isFresh) {
               setMarketPulse(pulse);
               setTrending(stocks);
@@ -250,17 +258,14 @@ const App: React.FC = () => {
           }
         }
 
-        initRef.current = true;
-        lastFetchRef.current = Date.now();
         setMarketPulse('');
         setTrending([]);
         
         console.log(`Fetching fresh market data for ${marketRegion}...`);
         
-        // Serialize requests to avoid hitting concurrent quota limits
+        // Serialize requests with significant delay to respect Free Tier RPM (15 RPM)
         const stocks = await getTrendingStocks(marketRegion, prefs.customApiKey);
-        // Small delay between requests to respect RPM
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 4000)); // 4s gap
         const pulse = await getMarketPulse(marketRegion, prefs.customApiKey);
         
         setTrending(stocks);
@@ -274,29 +279,25 @@ const App: React.FC = () => {
         }));
         localStorage.removeItem('quota_cooldown');
       } catch (err: any) {
-        console.error("Detailed Market Data Error:", err);
-        const errorMessage = err.message || JSON.stringify(err);
+        console.error("Market Data Error:", err);
+        const errorMessage = err.message || "Unknown error";
         const isQuota = errorMessage.includes('429') || errorMessage.toLowerCase().includes('quota');
         
         if (isQuota) {
-          console.error("QUOTA EXCEEDED ERROR:", errorMessage);
           localStorage.setItem('quota_cooldown', Date.now().toString());
-          setError("API Quota Exceeded. The Free Tier of Gemini has limits (15 requests/min). Cooldown active for 5 mins.");
+          setError("API Quota Exceeded. Cooldown active for 5 mins.");
         } else {
-          console.error("MARKET DATA ERROR:", errorMessage);
           setError(`Market data unavailable: ${errorMessage}`);
         }
         
-        // Fallback to stale cache if available
+        // Fallback to cache
         const cached = localStorage.getItem(`marketData_${marketRegion}`);
         if (cached) {
           try {
             const { pulse, stocks } = JSON.parse(cached);
             setMarketPulse(pulse);
             setTrending(stocks);
-          } catch (e) {
-            // Ignore parse errors
-          }
+          } catch (e) {}
         }
       }
     };
