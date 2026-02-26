@@ -1,0 +1,5 @@
+{
+  "name": "SmartStock AI",
+  "description": "A comprehensive stock analysis and suggestion platform powered by Gemini AI. Get real-time technical and fundamental analysis, news impact insights, and entry/exit level suggestions using Google Search grounding.",
+  "requestFramePermissions": []
+}
