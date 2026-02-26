@@ -12,10 +12,28 @@ const getAI = (customApiKey?: string) => {
   return new GoogleGenAI({ apiKey });
 };
 
-const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> => {
+// Global Request Queue to strictly respect Free Tier RPM (15 RPM = 1 request every 4 seconds)
+let lastRequestTime = 0;
+const MIN_REQUEST_GAP = 4500; // 4.5 seconds to be safe
+
+const throttleRequest = async () => {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  
+  if (timeSinceLastRequest < MIN_REQUEST_GAP) {
+    const waitTime = MIN_REQUEST_GAP - timeSinceLastRequest;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  
+  lastRequestTime = Date.now();
+};
+
+const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> => {
   let lastError: any;
+  
   for (let i = 0; i < maxRetries; i++) {
     try {
+      await throttleRequest();
       return await fn();
     } catch (error: any) {
       lastError = error;
@@ -23,19 +41,18 @@ const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 5): Promise<T> =>
       const isRateLimit = error.message?.includes('429') || 
                           error.status === 429 || 
                           errorStr.includes('quota') || 
-                          errorStr.includes('rate_limit') ||
-                          errorStr.includes('429');
+                          errorStr.includes('rate_limit');
       
       if (isRateLimit && i < maxRetries - 1) {
-        // Exponential backoff: 5s, 10s, 20s, 40s...
-        const delay = Math.pow(2, i) * 5000 + Math.random() * 2000;
+        // Longer backoff for quota errors
+        const delay = Math.pow(2, i) * 10000 + Math.random() * 5000;
         console.warn(`Quota exceeded. Retrying in ${Math.round(delay/1000)}s... (Attempt ${i + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
       
       if (isRateLimit) {
-        throw new Error("API Quota Exhausted. The Free Tier has limits (RPM/RPD). Please wait a few minutes or check your Google AI Studio dashboard.");
+        throw new Error("API Quota Exhausted. The Free Tier has a strict 15 RPM limit. Please wait a few minutes.");
       }
       throw error;
     }
