@@ -8,12 +8,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npm ci && npm run build
+      
+      - name: Install Dependencies
+        run: npm install
+        
+      - name: Build Project
+        run: npm run build
         env:
           VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+          
+      - name: Deploy to Firebase
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
-          projectId: smart-stock-ai-3cdd4
+          projectId: ${{ secrets.FIREBASE_PROJECT_ID || 'your-project-id-here' }}
