@@ -12,29 +12,35 @@ const getAI = (customApiKey?: string) => {
   return new GoogleGenAI({ apiKey });
 };
 
-// Global Request Queue to strictly respect Free Tier RPM (15 RPM = 1 request every 4 seconds)
-let lastRequestTime = 0;
-const MIN_REQUEST_GAP = 4500; // 4.5 seconds to be safe
+// Strict Serialized Request Queue to respect Gemini Free Tier limits (15 RPM)
+// This ensures that NO two requests ever overlap and there is always a safe gap.
+let requestQueue = Promise.resolve();
+const MIN_GAP = 5000; // 5 seconds between requests
 
-const throttleRequest = async () => {
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
+const queuedRequest = async <T>(fn: () => Promise<T>): Promise<T> => {
+  // Chain the new request to the end of the existing queue
+  const result = requestQueue.then(async () => {
+    console.log(`[Gemini Queue] Executing request at ${new Date().toLocaleTimeString()}...`);
+    // Wait for the gap before executing the next request
+    await new Promise(resolve => setTimeout(resolve, MIN_GAP));
+    return fn();
+  });
   
-  if (timeSinceLastRequest < MIN_REQUEST_GAP) {
-    const waitTime = MIN_REQUEST_GAP - timeSinceLastRequest;
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
+  // Update the queue pointer, catching errors so the chain doesn't break
+  requestQueue = result.catch((err) => {
+    console.error("[Gemini Queue] Request failed in queue:", err);
+  });
   
-  lastRequestTime = Date.now();
+  return result;
 };
 
-const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> => {
+const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> => {
   let lastError: any;
   
   for (let i = 0; i < maxRetries; i++) {
     try {
-      await throttleRequest();
-      return await fn();
+      // Use the serialized queue for EVERY request
+      return await queuedRequest(fn);
     } catch (error: any) {
       lastError = error;
       const errorStr = JSON.stringify(error).toLowerCase();
@@ -44,15 +50,14 @@ const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> =>
                           errorStr.includes('rate_limit');
       
       if (isRateLimit && i < maxRetries - 1) {
-        // Longer backoff for quota errors
-        const delay = Math.pow(2, i) * 10000 + Math.random() * 5000;
-        console.warn(`Quota exceeded. Retrying in ${Math.round(delay/1000)}s... (Attempt ${i + 1}/${maxRetries})`);
+        const delay = 15000 + Math.random() * 5000; // 15s wait on quota error
+        console.warn(`[Gemini] Quota hit. Retrying in ${Math.round(delay/1000)}s...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
       
       if (isRateLimit) {
-        throw new Error("API Quota Exhausted. The Free Tier has a strict 15 RPM limit. Please wait a few minutes.");
+        throw new Error("Gemini API Quota Exhausted (15 RPM limit). Please wait 1-2 minutes.");
       }
       throw error;
     }
