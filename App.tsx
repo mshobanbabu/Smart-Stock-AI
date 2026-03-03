@@ -522,7 +522,7 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey });
       if (!chatRef.current) {
         chatRef.current = ai.chats.create({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           config: { 
             systemInstruction: `Expert Stock AI. Data-driven and professional. Current Date: ${new Date().toLocaleDateString()}. Always use Google Search to find the latest real-time stock prices, news, and market data before answering. Do not rely on your internal knowledge for current prices.`,
             tools: [{ googleSearch: {} }]
